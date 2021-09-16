@@ -3,6 +3,10 @@
 set -e
 set -x
 
+# Will be managed by supervisord
+/etc/init.d/cron stop
+/etc/init.d/postfix stop
+
 # If this is a derived (baked) image, skip all of this logic.
 if [ -f /baked ]; then
   exit 0
@@ -56,9 +60,7 @@ fi
 if [ "$OVERRIDE_PHABRICATOR_URI" != "" ] ||
    [ "$OVERRIDE_PHABRICATOR_BRANCH" != "" ] ||
    [ "$OVERRIDE_ARCANIST_URI" != "" ] ||
-   [ "$OVERRIDE_ARCANIST_BRANCH" != "" ] ||
-   [ "$OVERRIDE_LIBPHUTIL_URI" != "" ] ||
-   [ "$OVERRIDE_LIBPHUTIL_BRANCH" != "" ]; then
+   [ "$OVERRIDE_ARCANIST_BRANCH" != "" ]; then
   ENABLE_UPDATE_ON_START=true
 fi
 
@@ -82,7 +84,7 @@ if [ -f /config/script.letsencrypt ]; then
   SCRIPT_AFTER_LETS_ENCRYPT=/config/script.letsencrypt
 fi
 
-if [ -f /config/letsencrypt.config ]; then 
+if [ -f /config/letsencrypt.config ]; then
   . /config/letsencrypt.config
   if [ "$LETS_ENCRYPT" == "true" ]; then
     SSL_TYPE="letsencrypt"
@@ -137,8 +139,7 @@ OVERRIDE_PHABRICATOR_URI="$OVERRIDE_PHABRICATOR_URI"
 OVERRIDE_PHABRICATOR_BRANCH="$OVERRIDE_PHABRICATOR_BRANCH"
 OVERRIDE_ARCANIST_URI="$OVERRIDE_ARCANIST_URI"
 OVERRIDE_ARCANIST_BRANCH="$OVERRIDE_ARCANIST_BRANCH"
-OVERRIDE_LIBPHUTIL_URI="$OVERRIDE_LIBPHUTIL_URI"
-OVERRIDE_LIBPHUTIL_BRANCH="$OVERRIDE_LIBPHUTIL_BRANCH"
+
 OVERRIDE_SPRINT_EXTENSION_URI="$OVERRIDE_SPRINT_EXTENSION_URI"
 OVERRIDE_SPRINT_EXTENSION_BRANCH="$OVERRIDE_SPRINT_EXTENSION_BRANCH"
 PHABRICATOR_HOST="$PHABRICATOR_HOST"
@@ -193,9 +194,11 @@ source /config.saved
 # Update the PHABRICATOR_*_USER in config files
 sed -i "s/PHABRICATOR_DAEMON_USER/$PHABRICATOR_DAEMON_USER/g" /etc/passwd
 sed -i "s/PHABRICATOR_VCS_USER/$PHABRICATOR_VCS_USER/g" /etc/passwd
+sed -i "s/PHABRICATOR_DAEMON_USER/$PHABRICATOR_DAEMON_USER/g" /etc/group
+sed -i "s/PHABRICATOR_VCS_USER/$PHABRICATOR_VCS_USER/g" /etc/group
 sed "s/__PHABRICATOR_VCS_USER__/$PHABRICATOR_VCS_USER/g" /etc/phabricator-ssh/sshd_config.phabricator.template > /etc/phabricator-ssh/sshd_config.phabricator
 sed "s/__PHABRICATOR_VCS_USER__/$PHABRICATOR_VCS_USER/g" /etc/phabricator-ssh/phabricator-ssh-hook.sh.template > /etc/phabricator-ssh/phabricator-ssh-hook.sh
-sed "s/__PHABRICATOR_WWW_USER__/nginx/g" /etc/php7/fpm/php-fpm.conf.template > /etc/php7/fpm/php-fpm.conf
+sed "s/__PHABRICATOR_WWW_USER__/nginx/g" /etc/php/7.4/fpm/php-fpm.conf.template > /etc/php/7.4/fpm/php-fpm.conf
 
 # Update supervisord so that it use rights users for services
 sed -i "s/__PHABRICATOR_WWW_USER__/nginx/g"    		       /app/supervisord.conf
@@ -215,18 +218,6 @@ if [ "$SCRIPT_BEFORE_UPDATE" != "" ]; then
 fi
 
 if [ "$ENABLE_UPDATE_ON_START" == "true" ]; then
-  pushd /srv/phabricator/libphutil
-  if [ "$OVERRIDE_LIBPHUTIL_URI" != "" ]; then
-    git remote set-url origin $OVERRIDE_LIBPHUTIL_URI
-  fi
-  git fetch --all
-  if [ "$OVERRIDE_LIBPHUTIL_BRANCH" != "" ]; then
-    git branch -M backup_branch
-    git checkout $OVERRIDE_LIBPHUTIL_BRANCH
-  fi
-  git pull
-  popd
-
   pushd /srv/phabricator/arcanist
   if [ "$OVERRIDE_ARCANIST_URI" != "" ]; then
     git remote set-url origin $OVERRIDE_ARCANIST_URI
@@ -369,7 +360,7 @@ unset APHLICT_PORT
 popd
 
 if [ "$ENABLE_APCU" != "" ]; then
-	  cat >/etc/php7/conf.d/apcu.ini <<EOF
+	  cat >/etc/php/7.4/conf.d/apcu.ini <<EOF
 extension=apcu.so
 EOF
 fi
@@ -384,7 +375,7 @@ if [ "$UPGRADE_STORAGE" != "" ]; then
   # The search database may need to be repaired, and if so, will prevent bin/storage upgrade from working
   # so preemptively run a repair on that database now.
   set +x
-  mysqlcheck --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" --password="$MYSQL_PASS" --databases "${MYSQL_STORAGE_NAMESPACE}_search" || true
+  mariadb-check --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" --password="$MYSQL_PASS" --databases "${MYSQL_STORAGE_NAMESPACE}_search" || true
   set -x
   /srv/phabricator/phabricator/bin/storage upgrade --force
 fi
@@ -407,6 +398,7 @@ sudo usermod -p NP $PHABRICATOR_VCS_USER
 sudo usermod -s /bin/sh $PHABRICATOR_VCS_USER
 
 # Ensure that /var/repo has phab-daemon as owner
+mkdir -p /var/repo
 sudo chown -R 2001 /var/repo
 
 GIT_COMMANDS="/usr/bin/git,/usr/bin/git-upload-pack,/usr/bin/git-receive-pack,/usr/bin/ssh"

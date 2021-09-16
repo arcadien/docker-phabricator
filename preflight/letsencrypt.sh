@@ -7,7 +7,7 @@ source /config.saved
 if [ "$SSL_TYPE" == "letsencrypt" ]; then
   while [ 0 -eq 0 ]; do
     if [ "$SSL_DOMAINS" != "" ]; then
-      /srv/letsencrypt/letsencrypt-auto certonly --text --non-interactive --keep --debug  --agree-tos --webroot -w /srv/letsencrypt-webroot --email $SSL_EMAIL -d $PHABRICATOR_HOST,$SSL_DOMAINS
+      certbot certonly --text --non-interactive --keep --debug  --agree-tos --webroot -w /srv/letsencrypt-webroot --email $SSL_EMAIL -d $PHABRICATOR_HOST,$SSL_DOMAINS
       if [ -f /config/letsencrypt/live/$PHABRICATOR_HOST ]; then
         break
       fi
@@ -16,7 +16,7 @@ if [ "$SSL_TYPE" == "letsencrypt" ]; then
         continue
       fi
     elif [ "$PHABRICATOR_CDN" != "" ]; then
-      /srv/letsencrypt/letsencrypt-auto certonly --text --non-interactive --keep --debug  --agree-tos --webroot -w /srv/letsencrypt-webroot --email $SSL_EMAIL -d $PHABRICATOR_HOST,$PHABRICATOR_CDN
+      certbot certonly --text --non-interactive --keep --debug  --agree-tos --webroot -w /srv/letsencrypt-webroot --email $SSL_EMAIL -d $PHABRICATOR_HOST,$PHABRICATOR_CDN
       if [ -f /config/letsencrypt/live/$PHABRICATOR_HOST ]; then
         break
       fi
@@ -25,7 +25,7 @@ if [ "$SSL_TYPE" == "letsencrypt" ]; then
         continue
       fi
     else
-      /srv/letsencrypt/letsencrypt-auto certonly --text --non-interactive --keep --debug  --agree-tos --webroot -w /srv/letsencrypt-webroot --email $SSL_EMAIL -d $PHABRICATOR_HOST
+      certbot certonly --text --non-interactive --keep --debug  --agree-tos --webroot -w /srv/letsencrypt-webroot --email $SSL_EMAIL -d $PHABRICATOR_HOST
       if [ -f /config/letsencrypt/live/$PHABRICATOR_HOST ]; then
         break
       fi

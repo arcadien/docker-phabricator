@@ -16,8 +16,6 @@ If you have a custom version of Phabricator with patches, you can change the Git
 - `OVERRIDE_PHABRICATOR_BRANCH` - Changes the Git branch or commit to use for the Phabricator repository.
 - `OVERRIDE_ARCANIST_URI` - Changes the Git URI to clone Arcanist from.
 - `OVERRIDE_ARCANIST_BRANCH` - Changes the Git branch or commit to use for the Arcanist repository.
-- `OVERRIDE_LIBPHUTIL_URI` - Changes the Git URI to clone libphutil from.
-- `OVERRIDE_LIBPHUTIL_BRANCH` - Changes the Git branch or commit to use for the libphutil repository.
 
 For example:
 

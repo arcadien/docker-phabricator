@@ -43,7 +43,7 @@ services:
 
   web1:
     container_name: 'phabricator_web1'
-    image: pollenm/phabricator
+    image: arcadien/phabricator
     volumes:
         - /srv/docker/phabricator/node1/config:/config
         - /srv/docker/phabricator/node1/files:/srv/phabricator/files
@@ -70,7 +70,7 @@ services:
 
   repo1:
     container_name: 'phabricator_repo1'
-    image: pollenm/phabricator-dev
+    image: arcadien/phabricator
     volumes:
         - /srv/docker/phabricator/repo1/repo:/var/repo
         - /srv/docker/phabricator/repo1/config:/config
