@@ -1,0 +1,104 @@
+#
+#
+# Sample version of a Phabricator cluster deployment
+#
+# It creates a private network where all nodes will lie, 192.168.200.0/24
+#
+# Web will take place at 192.168.200.101 ->  192.168.200.150
+# Repositories will take place at 192.168.200.151 -> 192.168.200.200
+# Databases will take place at 192.168.200.201 -> 192.168.200.254
+# 
+# As the container will use 192.168.200.1
+#
+# The node naming convention is:
+# - dbx   for DB nodes, where x is the node number
+# - webx  for web nodes, where x is the node number (daemons must be also on web nodes)
+# - repox for repositories (git for now) where x is the node number
+#
+# It is not possible to create search or notification nodes for now
+#
+#
+# Note: How cluster nodes will interact together is setup using Almanac inside Phabricator.
+#       Prior to use a full cluster docker-compose, you have to run a single instance Phabricator
+#       (say 1 web and 1 db) to setup the nodes. Then the cluster can be deployed. Some environment
+#       variables here are commented out (eg. PHABRICATOR_CLUSTER_DEVICE_HOST), these have to be filled
+#       with the same information as in Almanac. Almanac will also provide the private key for each nodes.
+#
+
+version: "3"
+services:
+
+  db1:
+    container_name: "phabricator_db1"
+    restart: always
+    volumes:
+     - /srv/docker/phabricator/mysql:/var/lib/mysql
+     - /srv/docker/phabricator/etc/mysql:/etc/mysql
+    image: mysql:5.7.14
+    environment:
+     - MYSQL_ROOT_PASSWORD=phabricator
+    networks:
+      dev_net:
+        ipv4_address: 192.168.200.201
+
+  web1:
+    container_name: 'phabricator_web1'
+    image: pollenm/phabricator
+    volumes:
+        - /srv/docker/phabricator/node1/config:/config
+        - /srv/docker/phabricator/node1/files:/srv/phabricator/files
+    restart: always
+    networks:
+      dev_net:
+        ipv4_address: 192.168.200.101
+    environment:
+     SSL_TYPE: 'cluster'
+     PHABRICATOR_HOST: 'phabricator.domain.com'
+     MYSQL_HOST: 192.168.200.201
+     MYSQL_PASS: 'phabricator'
+     MYSQL_USER: 'root'
+     #PHABRICATOR_REPOSITORY_PATH: '/repos'
+     #PHABRICATOR_VCS_USER: 'vcs-user' 
+     PHABRICATOR_DAEMON_USER: 'phab-daemon'
+     ENABLE_APCU: 'true'
+     PHABRICATOR_CLUSTER_ADDRESSES_JSON: '/config/cluster-addresses.json' 
+     PHABRICATOR_CLUSTER_DATABASE_JSON: '/config/cluster-databases.json' 
+     # PHABRICATOR_CLUSTER_MAILER_JSON: '/config/cluster-mailer.json' 
+     # PHABRICATOR_CLUSTER_DEVICE_KEY: '/config/host.key' 
+     # PHABRICATOR_CLUSTER_DEVICE_HOST: 'node1.dev' 
+     IS_CLUSTER_INSTALL: 'true'
+
+  repo1:
+    container_name: 'phabricator_repo1'
+    image: pollenm/phabricator-dev
+    volumes:
+        - /srv/docker/phabricator/repo1/repo:/var/repo
+        - /srv/docker/phabricator/repo1/config:/config
+    restart: always
+    networks:
+      dev_net:
+        ipv4_address: 192.168.200.151
+    environment:
+     SSL_TYPE: 'cluster'
+     PHABRICATOR_HOST: 'phabricator.domain.com'
+     MYSQL_HOST: 192.168.200.201
+     MYSQL_PASS: 'phabricator'
+     MYSQL_USER: 'root'
+     PHABRICATOR_REPOSITORY_PATH: '/repos'
+     PHABRICATOR_VCS_USER: 'vcs-user' 
+     PHABRICATOR_DAEMON_USER: 'phab-daemon'
+     PHABRICATOR_CLUSTER_ADDRESSES_JSON: '/config/cluster-addresses.json' 
+     PHABRICATOR_CLUSTER_DATABASE_JSON: '/config/cluster-databases.json' 
+     # PHABRICATOR_CLUSTER_MAILER_JSON: '/config/cluster-mailer.json' 
+     # PHABRICATOR_CLUSTER_DEVICE_KEY: '/config/host.key' 
+     # PHABRICATOR_CLUSTER_DEVICE_HOST: 'node1.dev' 
+     IS_CLUSTER_INSTALL: 'true'
+
+networks:
+  dev_net:
+        driver: bridge
+        ipam:
+          driver: default
+          config:
+           -
+            subnet: 192.168.200.0/24

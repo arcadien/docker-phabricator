@@ -1,0 +1,42 @@
+#!/bin/bash
+
+# This script bakes a derived Docker container from this container
+# with all of the required configuration.  This makes your derived
+# container much faster to start.
+#
+# Usage:
+#
+# FROM redpointgames/phabricator
+#
+# ADD my-script /my-script
+# RUN /my-script
+#
+# Where /my-script contains:
+#
+# #!/bin/bash
+# 
+# set -e
+# set -x
+#
+# export MYSQL_HOST="..."
+# # .. export more configuration values here ..
+#
+# /bake /my-script
+#
+# The final call to /bake will perform the actual bake based on
+# the configuration you specify.
+
+set -e
+set -x
+
+touch /is-baking
+
+/app/startup/10-boot-conf
+/app/startup/15-https-conf
+
+touch /baked
+rm /is-baking
+if [ -f $1 ]; then
+  rm $1
+fi
+rm /bake

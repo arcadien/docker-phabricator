@@ -1,0 +1,416 @@
+#!/bin/bash
+
+set -e
+set -x
+
+# If this is a derived (baked) image, skip all of this logic.
+if [ -f /baked ]; then
+  exit 0
+fi
+
+# Read environment variables and validate configuration
+if [ "$MYSQL_LINKED_CONTAINER" != "" ]; then
+  MYSQL_HOST_VARIABLE="${MYSQL_LINKED_CONTAINER}_PORT_3306_TCP_ADDR"
+  MYSQL_HOST="${!MYSQL_HOST_VARIABLE}"
+  MYSQL_PORT_VARIABLE="${MYSQL_LINKED_CONTAINER}_PORT_3306_TCP_PORT"
+  MYSQL_PORT="${!MYSQL_PORT_VARIABLE}"
+  unset MYSQL_HOST_VARIABLE
+  unset MYSQL_PORT_VARIABLE
+fi
+
+if [ "$MYSQL_STORAGE_NAMESPACE" == "" ]; then
+  MYSQL_STORAGE_NAMESPACE=phabricator
+fi
+
+if [ "${MYSQL_PORT:0:6}" == "tcp://" ]; then
+  echo "Error: MYSQL_PORT environment variable has been set based on a container link called mysql.  This places an invalid value inside MYSQL_PORT, which causes Phabricator startup to fail later on.  When using a linked container called mysql, you should explicitly set MYSQL_PORT=3306 to ensure it has a valid value."
+  exit 1
+fi
+
+if [ "$GIT_EDITOR" != "" ]; then
+   git config --global  core.editor $GIT_EDITOR
+fi
+
+if [ "$GIT_USER" != "" ]; then
+   git config --global user.name "$GIT_USER"
+fi
+
+if [ "$GIT_EMAIL" != "" ]; then
+   git config --global user.email $GIT_EMAIL
+fi
+
+if [ "$SSL_TYPE" == "" ]; then
+  SSL_TYPE=none
+fi
+if [ "$PHABRICATOR_VCS_USER" == "" ]; then
+  PHABRICATOR_VCS_USER=vcs-user
+fi
+if [ "$PHABRICATOR_DAEMON_USER" == "" ]; then
+  PHABRICATOR_DAEMON_USER=phab-daemon
+fi
+
+if [ "$PHABRICATOR_STORAGE_TYPE" == "" ]; then
+  PHABRICATOR_STORAGE_TYPE=mysql
+fi
+
+if [ "$OVERRIDE_PHABRICATOR_URI" != "" ] ||
+   [ "$OVERRIDE_PHABRICATOR_BRANCH" != "" ] ||
+   [ "$OVERRIDE_ARCANIST_URI" != "" ] ||
+   [ "$OVERRIDE_ARCANIST_BRANCH" != "" ] ||
+   [ "$OVERRIDE_LIBPHUTIL_URI" != "" ] ||
+   [ "$OVERRIDE_LIBPHUTIL_BRANCH" != "" ]; then
+  ENABLE_UPDATE_ON_START=true
+fi
+
+if [ -f /config/script.pre ]; then
+  SCRIPT_BEFORE_UPDATE=/config/script.pre
+fi
+
+if [ -f /config/script.premig ]; then
+  SCRIPT_BEFORE_MIGRATION=/config/script.premig
+fi
+
+if [ -f /config/script.post ]; then
+  SCRIPT_AFTER_MIGRATION=/config/script.post
+fi
+
+if [ -f /config/script.phd ]; then
+  SCRIPT_AFTER_DAEMONS=/config/script.phd
+fi
+
+if [ -f /config/script.letsencrypt ]; then
+  SCRIPT_AFTER_LETS_ENCRYPT=/config/script.letsencrypt
+fi
+
+if [ -f /config/letsencrypt.config ]; then 
+  . /config/letsencrypt.config
+  if [ "$LETS_ENCRYPT" == "true" ]; then
+    SSL_TYPE="letsencrypt"
+    SSL_EMAIL="$LETS_ENCRYPT_EMAIL"
+    if [ "$PHABRICATOR_HOST" == "" ]; then
+      PHABRICATOR_HOST="$LETS_ENCRYPT_DOMAIN"
+    fi
+  fi
+fi
+
+if [ -d /config/keycache ]; then
+  PHABRICATOR_HOST_KEYS_PATH="/config/keycache"
+fi
+
+# Add the various compatibility preamble
+# if we are in a cluster installation
+# see https://secure.phabricator.com/book/phabricator/article/configuring_preamble/
+if [ "$ADD_SSL_TERMINATION_PREAMBLE" != "" ]; then
+cat > /srv/phabricator/phabricator/support/preamble.php << EOF
+<?php
+
+// Overwrite REMOTE_ADDR with the value in the "X-Forwarded-For" HTTP header.
+
+// Only do this if you're certain the request is coming from a loadbalancer!
+// If the request came directly from a client, doing this will allow them to
+// them spoof any remote address.
+
+// The header may contain a list of IPs, like "1.2.3.4, 4.5.6.7", if the
+// request the load balancer received also had this header.
+
+if (isset(\$_SERVER['HTTP_X_FORWARDED_FOR'])) {
+  \$forwarded_for = \$_SERVER['HTTP_X_FORWARDED_FOR'];
+  if (\$forwarded_for) {
+    \$forwarded_for = explode(',', \$forwarded_for);
+    \$forwarded_for = end(\$forwarded_for);
+    \$forwarded_for = trim(\$forwarded_for);
+    \$_SERVER['REMOTE_ADDR'] = \$forwarded_for;
+  }
+}
+
+// Load balancer terminates the SSL connection
+\$_SERVER['HTTPS'] = true;
+
+EOF
+fi
+
+set +x
+cat >/config.saved <<EOF
+PHABRICATOR_VCS_USER="$PHABRICATOR_VCS_USER"
+PHABRICATOR_DAEMON_USER="$PHABRICATOR_DAEMON_USER"
+OVERRIDE_PHABRICATOR_URI="$OVERRIDE_PHABRICATOR_URI"
+OVERRIDE_PHABRICATOR_BRANCH="$OVERRIDE_PHABRICATOR_BRANCH"
+OVERRIDE_ARCANIST_URI="$OVERRIDE_ARCANIST_URI"
+OVERRIDE_ARCANIST_BRANCH="$OVERRIDE_ARCANIST_BRANCH"
+OVERRIDE_LIBPHUTIL_URI="$OVERRIDE_LIBPHUTIL_URI"
+OVERRIDE_LIBPHUTIL_BRANCH="$OVERRIDE_LIBPHUTIL_BRANCH"
+OVERRIDE_SPRINT_EXTENSION_URI="$OVERRIDE_SPRINT_EXTENSION_URI"
+OVERRIDE_SPRINT_EXTENSION_BRANCH="$OVERRIDE_SPRINT_EXTENSION_BRANCH"
+PHABRICATOR_HOST="$PHABRICATOR_HOST"
+PHABRICATOR_CDN="$PHABRICATOR_CDN"
+PHABRICATOR_REPOSITORY_PATH="$PHABRICATOR_REPOSITORY_PATH"
+PHABRICATOR_STORAGE_TYPE="$PHABRICATOR_STORAGE_TYPE"
+PHABRICATOR_STORAGE_PATH="$PHABRICATOR_STORAGE_PATH"
+PHABRICATOR_STORAGE_BUCKET="$PHABRICATOR_STORAGE_BUCKET"
+PHABRICATOR_VCS_PORT="$PHABRICATOR_VCS_PORT"
+PHABRICATOR_HOST_KEYS_PATH="$PHABRICATOR_HOST_KEYS_PATH"
+PHABRICATOR_ALLOW_HTTP_AUTH="$PHABRICATOR_ALLOW_HTTP_AUTH"
+PHABRICATOR_CLUSTER_DATABASE_JSON="$PHABRICATOR_CLUSTER_DATABASE_JSON"
+PHABRICATOR_CLUSTER_MAILER_JSON="$PHABRICATOR_CLUSTER_MAILER_JSON"
+PHABRICATOR_CLUSTER_ADDRESSES_JSON="$PHABRICATOR_CLUSTER_ADDRESSES_JSON"
+PHABRICATOR_CLUSTER_DEVICE_KEY="$PHABRICATOR_CLUSTER_DEVICE_KEY"
+PHABRICATOR_CLUSTER_DEVICE_HOST="$PHABRICATOR_CLUSTER_DEVICE_HOST"
+PHABRICATOR_ENV_APPEND_PATH_JSON="$PHABRICATOR_ENV_APPEND_PATH_JSON"
+PHABRICATOR_LIBRARIES_JSON="$PHABRICATOR_LIBRARIES_JSON"
+AWS_S3_ACCESS_KEY="$AWS_S3_ACCESS_KEY"
+AWS_S3_SECRET_KEY="$AWS_S3_SECRET_KEY"
+MYSQL_HOST="$MYSQL_HOST"
+MYSQL_PORT="$MYSQL_PORT"
+MYSQL_USER="$MYSQL_USER"
+set +x
+MYSQL_PASS="$MYSQL_PASS"
+set -x
+MYSQL_STORAGE_NAMESPACE="$MYSQL_STORAGE_NAMESPACE"
+ENABLE_APCU="$ENABLE_APCU"
+ENABLE_UPDATE_ON_START="$ENABLE_UPDATE_ON_START"
+SSL_TYPE="$SSL_TYPE"
+SSL_CERTIFICATE="$SSL_CERTIFICATE"
+SSL_PRIVATE_KEY="$SSL_PRIVATE_KEY"
+SSL_EMAIL="$SSL_EMAIL"
+SSL_DOMAINS="$SSL_DOMAINS"
+SCRIPT_BEFORE_UPDATE="$SCRIPT_BEFORE_UPDATE"
+SCRIPT_BEFORE_MIGRATION="$SCRIPT_BEFORE_MIGRATION"
+SCRIPT_AFTER_MIGRATION="$SCRIPT_AFTER_MIGRATION"
+SCRIPT_AFTER_LETS_ENCRYPT="$SCRIPT_AFTER_LETS_ENCRYPT"
+SCRIPT_BEFORE_DAEMONS="$SCRIPT_BEFORE_DAEMONS"
+SCRIPT_AFTER_DAEMONS="$SCRIPT_AFTER_DAEMONS"
+DISABLE_IOMONITOR="$DISABLE_IOMONITOR"
+GIT_EMAIL="$GIT_EMAIL"
+GIT_USER="$GIT_USER"
+GIT_EDITOR="$GIT_EDITOR"
+UPGRADE_STORAGE="$UPGRADE_STORAGE"
+EOF
+set -x
+
+# Reload configuration
+source /config.saved
+
+# Update the PHABRICATOR_*_USER in config files
+sed -i "s/PHABRICATOR_DAEMON_USER/$PHABRICATOR_DAEMON_USER/g" /etc/passwd
+sed -i "s/PHABRICATOR_VCS_USER/$PHABRICATOR_VCS_USER/g" /etc/passwd
+sed "s/__PHABRICATOR_VCS_USER__/$PHABRICATOR_VCS_USER/g" /etc/phabricator-ssh/sshd_config.phabricator.template > /etc/phabricator-ssh/sshd_config.phabricator
+sed "s/__PHABRICATOR_VCS_USER__/$PHABRICATOR_VCS_USER/g" /etc/phabricator-ssh/phabricator-ssh-hook.sh.template > /etc/phabricator-ssh/phabricator-ssh-hook.sh
+sed "s/__PHABRICATOR_WWW_USER__/nginx/g" /etc/php7/fpm/php-fpm.conf.template > /etc/php7/fpm/php-fpm.conf
+
+# Update supervisord so that it use rights users for services
+sed -i "s/__PHABRICATOR_WWW_USER__/nginx/g"    		       /app/supervisord.conf
+sed -i "s/__PHABRICATOR_DAEMON_USER__/$PHABRICATOR_DAEMON_USER/g" /app/supervisord.conf
+sed -i "s/__PHABRICATOR_VCS_USER__/$PHABRICATOR_CVS_USER/g"    /app/supervisord.conf
+
+# Set phab-deamon as owner of /srv/phabricator
+chown phab-daemon /srv/phabricator/
+chmod 755 /etc/phabricator-ssh/phabricator-ssh-hook.sh
+
+
+# Set up Phabricator
+if [ "$SCRIPT_BEFORE_UPDATE" != "" ]; then
+  pushd /srv/phabricator/phabricator
+  $SCRIPT_BEFORE_UPDATE
+  popd
+fi
+
+if [ "$ENABLE_UPDATE_ON_START" == "true" ]; then
+  pushd /srv/phabricator/libphutil
+  if [ "$OVERRIDE_LIBPHUTIL_URI" != "" ]; then
+    git remote set-url origin $OVERRIDE_LIBPHUTIL_URI
+  fi
+  git fetch --all
+  if [ "$OVERRIDE_LIBPHUTIL_BRANCH" != "" ]; then
+    git branch -M backup_branch
+    git checkout $OVERRIDE_LIBPHUTIL_BRANCH
+  fi
+  git pull
+  popd
+
+  pushd /srv/phabricator/arcanist
+  if [ "$OVERRIDE_ARCANIST_URI" != "" ]; then
+    git remote set-url origin $OVERRIDE_ARCANIST_URI
+  fi
+  git fetch --all
+  if [ "$OVERRIDE_ARCANIST_BRANCH" != "" ]; then
+    git branch -M backup_branch
+    git checkout $OVERRIDE_ARCANIST_BRANCH
+  fi
+  git pull
+  popd
+
+  pushd /srv/phabricator/phabricator
+  if [ "$OVERRIDE_PHABRICATOR_URI" != "" ]; then
+    git remote set-url origin $OVERRIDE_PHABRICATOR_URI
+  fi
+  git fetch --all
+  if [ "$OVERRIDE_PHABRICATOR_BRANCH" != "" ]; then
+    git branch -M backup_branch
+    git checkout $OVERRIDE_PHABRICATOR_BRANCH
+    
+  fi
+  git pull
+  popd
+  
+  pushd /srv/phabricator/Sprint-extension
+  if [ "$OVERRIDE_SPRINT_EXTENSION_URI" != "" ]; then
+    git remote set-url origin $OVERRIDE_SPRINT_EXTENSION_URI
+  fi
+  git fetch --all
+  if [ "$OVERRIDE_SPRINT_EXTENSION_BRANCH" != "" ]; then
+    git branch -M backup_branch
+    git checkout $OVERRIDE_SPRINT_EXTENSION_BRANCH
+    
+  fi
+  git pull
+  popd
+fi
+
+pushd /srv/phabricator/phabricator
+if [ "$MYSQL_HOST" != "" ]; then
+  ./bin/config set mysql.host "$MYSQL_HOST"
+fi
+if [ "$MYSQL_PORT" != "" ]; then
+  ./bin/config set mysql.port "$MYSQL_PORT"
+fi
+if [ "$MYSQL_USER" != "" ]; then
+  ./bin/config set mysql.user "$MYSQL_USER"
+fi
+set +x
+if [ "$MYSQL_PASS" != "" ]; then
+  ./bin/config set mysql.pass "$MYSQL_PASS"
+fi
+set -x
+if [ "$MYSQL_STORAGE_NAMESPACE" != "" ]; then
+  ./bin/config set storage.default-namespace "$MYSQL_STORAGE_NAMESPACE"
+fi
+if [ "$PHABRICATOR_HOST" != "" ]; then
+  if [ "$SSL_TYPE" == "none" ]; then
+    ./bin/config set phabricator.base-uri "http://$PHABRICATOR_HOST/"
+  else
+    ./bin/config set phabricator.base-uri "https://$PHABRICATOR_HOST/"
+  fi
+fi
+if [ "$PHABRICATOR_CDN" != "" ]; then
+  if [ "$SSL_TYPE" == "none" ]; then
+    ./bin/config set security.alternate-file-domain "http://$PHABRICATOR_CDN/"
+  else
+    ./bin/config set security.alternate-file-domain "https://$PHABRICATOR_CDN/"
+  fi
+fi
+if [ "$PHABRICATOR_VCS_PORT" != "" ]; then
+    ./bin/config set diffusion.ssh-port "$PHABRICATOR_VCS_PORT"
+fi
+./bin/config set phd.user "$PHABRICATOR_DAEMON_USER"
+./bin/config set diffusion.ssh-user "$PHABRICATOR_VCS_USER"
+./bin/config set pygments.enabled true
+if [ "$PHABRICATOR_REPOSITORY_PATH" != "" ]; then
+  ./bin/config set repository.default-local-path "$PHABRICATOR_REPOSITORY_PATH"
+fi
+if [ "$PHABRICATOR_STORAGE_TYPE" == "mysql" ]; then
+  ./bin/config set storage.mysql-engine.max-size 2097152
+fi
+if [ "$PHABRICATOR_STORAGE_TYPE" == "disk" ]; then
+  ./bin/config set storage.mysql-engine.max-size 0
+  ./bin/config set storage.local-disk.path "$PHABRICATOR_STORAGE_PATH"
+fi
+if [ "$PHABRICATOR_STORAGE_TYPE" == "s3" ]; then
+  ./bin/config set storage.mysql-engine.max-size 0
+  ./bin/config set storage.s3.bucket "$PHABRICATOR_STORAGE_BUCKET"
+fi
+if [ "$AWS_S3_ACCESS_KEY" != "" ]; then
+  ./bin/config set amazon-s3.access-key "$AWS_S3_ACCESS_KEY"
+fi
+if [ "$AWS_S3_SECRET_KEY" != "" ]; then
+  ./bin/config set amazon-s3.secret-key "$AWS_S3_SECRET_KEY"
+fi
+
+if [ "$PHABRICATOR_ALLOW_HTTP_AUTH" != "" ]; then
+	./bin/config set diffusion.allow-http-auth "$PHABRICATOR_ALLOW_HTTP_AUTH"
+fi
+
+if [ "$PHABRICATOR_CLUSTER_DATABASE_JSON" != "" ]; then
+	./bin/config set cluster.databases --stdin < $PHABRICATOR_CLUSTER_DATABASE_JSON
+fi
+
+if [ "$PHABRICATOR_CLUSTER_MAILER_JSON" != "" ]; then
+	./bin/config set cluster.mailers --stdin < $PHABRICATOR_CLUSTER_MAILER_JSON
+fi
+
+if [ "$PHABRICATOR_CLUSTER_ADDRESSES_JSON" != "" ]; then
+	./bin/config set cluster.addresses --stdin < $PHABRICATOR_CLUSTER_ADDRESSES_JSON
+fi
+
+if [ "$PHABRICATOR_ENV_APPEND_PATH_JSON" != "" ]; then
+	./bin/config set environment.append-paths --stdin < $PHABRICATOR_ENV_APPEND_PATH_JSON
+fi
+
+if [ "$PHABRICATOR_LIBRARIES_JSON" != "" ]; then
+	./bin/config set load-libraries --stdin < $PHABRICATOR_LIBRARIES_JSON
+fi
+
+if [ "$PHABRICATOR_CLUSTER_DEVICE_KEY" != "" ]; then
+ /srv/phabricator/phabricator/bin/almanac register \
+  --force \
+  --device $PHABRICATOR_CLUSTER_DEVICE_HOST \
+  --private-key $PHABRICATOR_CLUSTER_DEVICE_KEY
+fi
+
+if [ "$SSL_TYPE" == "none" ]; then
+  APHLICT_PROTOCOL="http"
+  APHLICT_PORT=80
+else
+  APHLICT_PROTOCOL="https"
+  APHLICT_PORT=443
+fi
+./bin/config set notification.servers '[{"type": "client","host": "'$PHABRICATOR_HOST'","port": '$APHLICT_PORT',"protocol": "'$APHLICT_PROTOCOL'","path": "/ws/"},{"type": "admin","host": "127.0.0.1","port": 22281,"protocol": "http"}]'
+unset APHLICT_PROTOCOL
+unset APHLICT_PORT
+popd
+
+if [ "$ENABLE_APCU" != "" ]; then
+	  cat >/etc/php7/conf.d/apcu.ini <<EOF
+extension=apcu.so
+EOF
+fi
+
+if [ "$SCRIPT_BEFORE_MIGRATION" != "" ]; then
+  pushd /srv/phabricator/phabricator
+  $SCRIPT_BEFORE_MIGRATION
+  popd
+fi
+
+if [ "$UPGRADE_STORAGE" != "" ]; then
+  # The search database may need to be repaired, and if so, will prevent bin/storage upgrade from working
+  # so preemptively run a repair on that database now.
+  set +x
+  mysqlcheck --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" --password="$MYSQL_PASS" --databases "${MYSQL_STORAGE_NAMESPACE}_search" || true
+  set -x
+  /srv/phabricator/phabricator/bin/storage upgrade --force
+fi
+
+# activate 
+pushd /srv/phabricator/phabricator
+bin/config set phabricator.show-prototypes true
+popd
+
+if [ "$SECURE_MYSQL" == "yes" ]; then
+cat >> /srv/phabricator/.my.cnf << EOF
+[client]
+ssl
+EOF
+fi
+
+
+# Polish users
+sudo usermod -p NP $PHABRICATOR_VCS_USER
+sudo usermod -s /bin/sh $PHABRICATOR_VCS_USER
+
+# Ensure that /var/repo has phab-daemon as owner
+sudo chown -R 2001 /var/repo
+
+GIT_COMMANDS="/usr/bin/git,/usr/bin/git-upload-pack,/usr/bin/git-receive-pack,/usr/bin/ssh"
+echo "$PHABRICATOR_VCS_USER ALL=($PHABRICATOR_DAEMON_USER) SETENV: NOPASSWD:/bin/ls,$GIT_COMMANDS" \
+	> /etc/sudoers.d/phabricator
+echo "nginx ALL=($PHABRICATOR_DAEMON_USER) SETENV: NOPASSWD:$GIT_COMMANDS,/usr/lib/git-core/git-http-backend" \
+	>> /etc/sudoers.d/phabricator
