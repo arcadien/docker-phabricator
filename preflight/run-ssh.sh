@@ -20,8 +20,11 @@ if [ ! -f /baked ]; then
     #ensure correct file modes of private keys
     chmod 600 /etc/ssh/ssh_host_{dsa_,ecdsa_,ed25519_,,rsa_}key
   fi
-    #generate missing keys --> sshd needs sometimes more keys for newer protocolls
-    /usr/sbin/sshd-gen-keys-start
+    #generate missing keys --> sshd needs sometimes more keys for newer protocols
+    ssh-keygen -f /etc/ssh/ssh_host_rsa_key -N '' -t rsa
+    ssh-keygen -f /etc/ssh/ssh_host_dsa_key -N '' -t dsa
+    ssh-keygen -f /etc/ssh/ssh_host_dsa_key -N '' -t ed25519
+
     mkdir -pv $PHABRICATOR_HOST_KEYS_PATH
     #copy only when the file does not exist
     cp -vn /etc/ssh/ssh_host_{dsa_,ecdsa_,ed25519_,,rsa_}key{,.pub} $PHABRICATOR_HOST_KEYS_PATH/
