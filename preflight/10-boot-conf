@@ -297,6 +297,10 @@ fi
 ./bin/config set pygments.enabled true
 if [ "$PHABRICATOR_REPOSITORY_PATH" != "" ]; then
   ./bin/config set repository.default-local-path "$PHABRICATOR_REPOSITORY_PATH"
+
+  # FIXME use variable
+  # 2001 is phab-daemon user
+  chown -R 2001 $PHABRICATOR_REPOSITORY_PATH
 fi
 if [ "$PHABRICATOR_STORAGE_TYPE" == "mysql" ]; then
   ./bin/config set storage.mysql-engine.max-size 2097152
