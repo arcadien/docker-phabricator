@@ -19,16 +19,17 @@ docker run \
     --env PHABRICATOR_VCS_USER=vcs-user \
     --env PHABRICATOR_REPOSITORY_PATH=/repos \
     -v /host/repo/path:/repos \
-    pollenm/phabricator
+    [image_name]
 ```
+Where [image_name] is your build of Docker image for Phabricator.
 
 Alternatively you can launch this image with Docker Compose.
 
-To run a standalone Phabricator stack, you can custom and use the docker-compose.yml.standalone script. It contains information in its header.
+To run a standalone Phabricator stack, you can custom and use the [standalone docker-compose.yml template](https://github.com/arcadien/docker-phabricator/blob/master/docker-compose.yml.standalone) script. It contains information in its header.
 
 ## Configuration
 
-For basic configuration in getting the image running, refer to [Basic Configuration](https://github.com/RedpointGames/phabricator/blob/master/BASIC-CONFIG.md).
+For basic configuration in getting the image running, refer to [Basic Configuration](https://github.com/arcadien/docker-phabricator/blob/master/BASIC-CONFIG.md).
 
 For more advanced configuration topics including:
 
@@ -36,13 +37,14 @@ For more advanced configuration topics including:
 * Running custom commands during the boot process, and
 * Baking configuration into your own derived Docker image
 
-refer to ADVANCED-CONFIG.md.
+refer to [advanced configuration](https://github.com/arcadien/docker-phabricator/blob/master/ADVANCED-CONFIG.md).
 
 ## Support
 
 For issues regarding environment setup, missing tools or parts of the image not starting correctly, file a GitHub issue.
 
 For issues encountered while using Phabricator itself, report the issue with reproduction steps on the [upstream bug tracker](https://secure.phabricator.com/book/phabcontrib/article/bug_reports/).
+There is no guarantee at all for fixes or bugtracker availability since [upstream stopped active support](https://admin.phacility.com/phame/post/view/11/phacility_is_winding_down_operations/).
 
 ## License
 
