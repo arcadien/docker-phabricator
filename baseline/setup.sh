@@ -17,7 +17,7 @@ DEBIAN_FRONTEND=noninteractive apt install -y nginx \
     php-fileinfo php-posix php-json php-iconv php-ctype php-zip php-sockets \
     python3-pygments nodejs ca-certificates \
     sudo subversion mercurial php-xmlwriter php-opcache imagemagick php-imagick \
-    postfix locales git python3-pip npm hostname php-apcu certbot supervisor mariadb-client cron
+    postfix locales git python3-pip npm hostname php-apcu certbot supervisor mariadb-client cron openssh-server
 
 # Do not start services automatically
 update-rc.d cron remove

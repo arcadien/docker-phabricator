@@ -16,7 +16,8 @@ services:
     ports:
      - "1443:443"
      - "1080:80"
-     - "1022:22"
+     - "2222:2222"
+     - "24:24"
     #volumes:
     # - /home/docker/phab-stand/repos:/repos
     # - /home/docker/phab-stand/extensions:/srv/phabricator/phabricator/src/extensions

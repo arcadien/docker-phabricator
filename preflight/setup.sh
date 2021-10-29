@@ -49,8 +49,8 @@ echo '' >> /etc/php/7.4/fpm/php-fpm.conf
 echo 'php_value[include_path] = "/srv/phabricator/PHPExcel/Classes"' >> /etc/php/7.4/fpm/php-fpm.conf
 
 # Move the default SSH to port 24
-echo "" >> /etc/ssh/sshd_config
-echo "Port 24" >> /etc/ssh/sshd_config
+mkdir -p /etc/ssh/sshd_config.d/
+echo "Port 24" >> /etc/ssh/sshd_config.d/phabricator_host_default.conf
 
 # Configure Phabricator SSH service
 chown root:root /etc/phabricator-ssh/*

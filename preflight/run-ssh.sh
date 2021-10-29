@@ -13,6 +13,10 @@ if [ "$PHABRICATOR_HOST_KEYS_PATH" == "" ]; then
   exit 0
 fi
 
+# In case if not already present,
+# avoid 'Missing privilege separation directory: /run/sshd' error
+mkdir -p /run/sshd
+
 # Generate SSH host keys if they aren't already present
 if [ ! -f /baked ]; then
   if [ -d $PHABRICATOR_HOST_KEYS_PATH ]; then
@@ -20,14 +24,14 @@ if [ ! -f /baked ]; then
     #ensure correct file modes of private keys
     chmod 600 /etc/ssh/ssh_host_{dsa_,ecdsa_,ed25519_,,rsa_}key
   fi
-    #generate missing keys --> sshd needs sometimes more keys for newer protocols
-    ssh-keygen -f /etc/ssh/ssh_host_rsa_key -N '' -t rsa
-    ssh-keygen -f /etc/ssh/ssh_host_dsa_key -N '' -t dsa
-    ssh-keygen -f /etc/ssh/ssh_host_dsa_key -N '' -t ed25519
+  #generate missing keys --> sshd needs sometimes more keys for newer protocols
+  if [ ! -f /etc/ssh/ssh_host_rsa_key     ]; then ssh-keygen -f /etc/ssh/ssh_host_rsa_key     -t rsa     -N ''; fi
+  if [ ! -f /etc/ssh/ssh_host_dsa_key     ]; then ssh-keygen -f /etc/ssh/ssh_host_dsa_key     -t dsa     -N ''; fi
+  if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then ssh-keygen -f /etc/ssh/ssh_host_ed25519_key -t ed25519 -N ''; fi
 
-    mkdir -pv $PHABRICATOR_HOST_KEYS_PATH
-    #copy only when the file does not exist
-    cp -vn /etc/ssh/ssh_host_{dsa_,ecdsa_,ed25519_,,rsa_}key{,.pub} $PHABRICATOR_HOST_KEYS_PATH/
+  mkdir -pv $PHABRICATOR_HOST_KEYS_PATH
+  #copy only when the file does not exist
+  cp -vn /etc/ssh/ssh_host_{dsa_,ecdsa_,ed25519_,,rsa_}key{,.pub} $PHABRICATOR_HOST_KEYS_PATH/
 fi
 
 if [ ! -f /is-baking ]; then
