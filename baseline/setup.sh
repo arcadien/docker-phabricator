@@ -35,7 +35,7 @@ DEBIAN_FRONTEND=noninteractive apt-get clean
 cd /
 mkdir /srv/phabricator
 cd /srv/phabricator
-git clone https://www.github.com/arcadien/phabricator.git               /srv/phabricator/phabricator
-git clone https://www.github.com/arcadien/arcanist.git                  /srv/phabricator/arcanist
+git clone https://we.phorge.it/source/phorge.git                        /srv/phabricator/phabricator
+git clone https://we.phorge.it/source/arcanist.git                      /srv/phabricator/arcanist
 git clone https://www.github.com/PHPOffice/PHPExcel.git                 /srv/phabricator/PHPExcel
 git clone https://github.com/arcadien/phabricator-extensions-Sprint.git /srv/phabricator/Sprint-extension
