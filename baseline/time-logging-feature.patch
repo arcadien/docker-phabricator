@@ -1,0 +1,1135 @@
+commit 6f894f9f6b38cb1b0fbe4ce8c5bbaa4d659bb62c
+Author: Aurélien Labrosse <aurelien@pollen-metrology.com>
+Date:   Mon Dec 4 14:59:51 2017 +0100
+
+    feat: Allow direct time loging on tasks
+    
+    * Users are now able to "spend" time on various task,
+      and this information is available in `Phrequent` application,
+      as well as in the user profile and task view.
+    
+    Time is logged using a base timestamp and a timelog string.
+    
+    - Formatted string uses tokens composed by a number and a character:
+      - Nw : add N week(s) of work. One week is five days
+      - Nd : add N day(s) of work. One day is 7 hours
+      - Nh : add N hours of work
+      - Nm : add N minutes of work
+    - A conduit is available for time-logging using the REST API
+    
+    Tokens can be chained, ex. 1h30m, 1w3d2h20m
+
+diff --git a/src/applications/harbormaster/step/HarbormasterHTTPRequestWithContentBuildStepImplementation.php b/src/applications/harbormaster/step/HarbormasterHTTPRequestWithContentBuildStepImplementation.php
+new file mode 100644
+index 0000000000..b171a2e784
+--- /dev/null
++++ b/src/applications/harbormaster/step/HarbormasterHTTPRequestWithContentBuildStepImplementation.php
+@@ -0,0 +1,124 @@
++<?php
++
++final class HarbormasterHTTPRequestWithContentBuildStepImplementation
++  extends HarbormasterBuildStepImplementation {
++
++  public function getName() {
++    return pht('Make POST HTTP Request with payload');
++  }
++
++  public function getGenericDescription() {
++    return pht('Make a POST HTTP request with payload.');
++  }
++
++  public function getBuildStepGroupKey() {
++    return HarbormasterExternalBuildStepGroup::GROUPKEY;
++  }
++
++  public function getDescription() {
++    $domain = null;
++    $uri = $this->getSetting('uri');
++    if ($uri) {
++      $domain = id(new PhutilURI($uri))->getDomain();
++    }
++
++    $method = $this->formatSettingForDescription('method', 'POST');
++    $domain = $this->formatValueForDescription($domain);
++
++    if ($this->getSetting('credential')) {
++      return pht(
++        'Make an authenticated HTTP %s request to %s.',
++        $method,
++        $domain);
++    } else {
++      return pht(
++        'Make an HTTP %s request to %s.',
++        $method,
++        $domain);
++    }
++  }
++
++  public function execute(
++    HarbormasterBuild $build,
++    HarbormasterBuildTarget $build_target) {
++
++    $viewer = PhabricatorUser::getOmnipotentUser();
++    $settings = $this->getSettings();
++    $variables = $build_target->getVariables();
++
++    $uri = $this->mergeVariables(
++      'vurisprintf',
++      $settings['uri'],
++      $variables);
++
++    $method  = nonempty(idx($settings, 'method'), 'POST');
++
++    $content = $this->mergeVariables(
++      'vcsprintf',
++      $settings['content'],
++      $variables);
++    $content = preg_replace ( "/'/", "", $content);
++
++    $future = id(new HTTPSFuture($uri))
++      ->setMethod($method)
++      ->setTimeout(60);
++    if(strlen(trim($content))>0)
++    {
++	$future->write(trim($content));
++    }
++    $credential_phid = $this->getSetting('credential');
++    if ($credential_phid) {
++      $key = PassphrasePasswordKey::loadFromPHID(
++        $credential_phid,
++        $viewer);
++      $future->setHTTPBasicAuthCredentials(
++        $key->getUsernameEnvelope()->openEnvelope(),
++        $key->getPasswordEnvelope());
++    }
++
++    $this->resolveFutures(
++      $build,
++      $build_target,
++      array($future));
++
++    $this->logHTTPResponse($build, $build_target, $future, $uri);
++
++    list($status) = $future->resolve();
++    if ($status->isError()) {
++      throw new HarbormasterBuildFailureException();
++    }
++  }
++
++  public function getFieldSpecifications() {
++    return array(
++      'uri' => array(
++        'name' => pht('URI'),
++        'type' => 'text',
++        'required' => true,
++      ),
++      'method' => array(
++        'name' => pht('HTTP Method'),
++        'type' => 'select',
++        'options' => array_fuse(array('POST')),
++      ),
++      'content' => array(
++        'name' => pht('Content'),
++        'type' => 'text',
++        'required' => true,
++      ),
++      'credential' => array(
++        'name' => pht('Credentials'),
++        'type' => 'credential',
++        'credential.type'
++          => PassphrasePasswordCredentialType::CREDENTIAL_TYPE,
++        'credential.provides'
++          => PassphrasePasswordCredentialType::PROVIDES_TYPE,
++      ),
++    );
++  }
++
++  public function supportsWaitForMessage() {
++    return true;
++  }
++
++}
+diff --git a/src/applications/people/application/PhabricatorPeopleApplication.php b/src/applications/people/application/PhabricatorPeopleApplication.php
+index 86c03fdf4b..5af41d87c3 100644
+--- a/src/applications/people/application/PhabricatorPeopleApplication.php
++++ b/src/applications/people/application/PhabricatorPeopleApplication.php
+@@ -78,6 +78,8 @@ final class PhabricatorPeopleApplication extends PhabricatorApplication {
+           'PhabricatorPeopleProfilePictureController',
+         'manage/(?P<id>[1-9]\d*)/' =>
+           'PhabricatorPeopleProfileManageController',
++        'time/(?P<id>[1-9]\d*)/' =>
++          'PhabricatorPeopleProfileTimeController',
+       ),
+       '/p/(?P<username>[\w._-]+)/' => array(
+         '' => 'PhabricatorPeopleProfileViewController',
+diff --git a/src/applications/people/controller/PhabricatorPeopleProfileTimeController.php b/src/applications/people/controller/PhabricatorPeopleProfileTimeController.php
+new file mode 100644
+index 0000000000..f0c444c15f
+--- /dev/null
++++ b/src/applications/people/controller/PhabricatorPeopleProfileTimeController.php
+@@ -0,0 +1,153 @@
++<?php
++
++final class PhabricatorPeopleProfileTimeController
++  extends PhabricatorPeopleProfileController {
++
++  public function shouldAllowPublic() {
++    return true;
++  }
++
++  public function handleRequest(AphrontRequest $request) {
++    $viewer = $this->getViewer();
++    $id = $request->getURIData('id');
++
++    $user = id(new PhabricatorPeopleQuery())
++      ->setViewer($viewer)
++      ->withIDs(array($id))
++      ->needProfile(true)
++      ->needUserSettings(true)
++      ->needProfileImage(true)
++      ->needAvailability(true)
++      ->executeOne();
++    if (!$user) {
++      return new Aphront404Response();
++    }
++
++    $class = 'PhabricatorPhrequentApplication';
++    if (!PhabricatorApplication::isClassInstalledForViewer($class, $viewer)) {
++      return new Aphront404Response();
++    }
++
++    $this->setUser($user);
++    $title = array(pht('Time logging'), $user->getUsername());
++    $header = $this->buildProfileHeader();
++    $timelogs = $this->buildTimeLogView($user);
++
++    $crumbs = $this->buildApplicationCrumbs();
++    $crumbs->addTextCrumb(pht('Recent timelogs'));
++    $crumbs->setBorder(true);
++
++    $navigation = $this->newNavigation(
++      $user,
++      PhabricatorPeopleProfileMenuEngine::ITEM_TIME);
++
++    $view = id(new PHUITwoColumnView())
++      ->setHeader($header)
++      ->addClass('project-view-home')
++      ->addClass('project-view-people-home')
++      ->setFooter(array(
++        $timelogs,
++      ));
++
++    return $this->newPage()
++      ->setTitle($title)
++      ->setCrumbs($crumbs)
++      ->setNavigation($navigation)
++      ->appendChild($view);
++  }
++
++  private function buildTimeLogView(PhabricatorUser $user) {
++    
++    $request = id(new PhrequentUserTimeQuery())
++    ->withUserPHIDs(array($user->getPHID()))
++    ->setLimit(100)
++    ->setViewer($user)
++    ->needPreemptingEvents(true);
++
++    $usertimes = $request->execute();
++
++      $view = id(new PHUIObjectItemListView())
++      ->setUser($user);
++
++    $handles = array();
++    foreach ($usertimes as $usertime) {
++      $item = new PHUIObjectItemView();
++      if ($usertime->getObjectPHID() === null) {
++        $item->setHeader($usertime->getNote());
++      } 
++      $item->setObject($usertime);
++
++      $block = new PhrequentTimeBlock(array($usertime));
++      $time_spent = $block->getTimeSpentOnObject(
++        $usertime->getObjectPHID(),
++        PhabricatorTime::getNow());
++
++      $time_spent = $time_spent == 0 ? 'none' :
++        phutil_format_relative_time_detailed($time_spent);
++
++      if ($usertime->getDateEnded() !== null) {
++        $item->addAttribute(
++          pht(
++            'Tracked %s',
++            $time_spent));
++        $item->addAttribute(
++          pht(
++            'Started on %s',
++            phabricator_datetime($usertime->getDateStarted(), $user)));
++
++        $item->addAttribute(
++          pht(
++            'Ended on %s',
++            phabricator_datetime($usertime->getDateEnded(), $user)));
++
++        if ($usertime->getObjectPHID() !== null &&
++          $usertime->getUserPHID() === $user->getPHID()) {
++          $back_uri = '/';
++          if ($this->getRequest() !== null) {
++            $back_uri = $this->getRequest()->GetPath();
++          }
++          $uri = new PhutilURI('/phrequent/track/delete/'.
++              $usertime->getObjectPHID().'/');
++          $parameters = array();
++          $parameters['__back__'] = $back_uri;
++          $parameters['__timelog_id__'] = $usertime->getID();
++          $uri->setQueryParams($parameters);
++          $href = $uri->__toString();
++
++          $item->addAction(
++              id(new PHUIListItemView())
++                ->setIcon('fa-trash')
++                ->addSigil('phrequent-delete-worklog')
++                ->setWorkflow(true)
++                ->setRenderNameAsTooltip(true)
++                ->setName(pht('Delete'))
++                ->setHref($href));
++        }
++
++      } else {
++        $item->addAttribute(
++          pht(
++            'Tracked %s so far',
++            $time_spent));
++        if ($usertime->getObjectPHID() !== null &&
++            $usertime->getUserPHID() === $viewer->getPHID()) {
++          $item->addAction(
++            id(new PHUIListItemView())
++              ->setIcon('fa-stop')
++              ->addSigil('phrequent-stop-tracking')
++              ->setWorkflow(true)
++              ->setRenderNameAsTooltip(true)
++              ->setName(pht('Stop'))
++              ->setHref(
++                '/phrequent/track/stop/'.
++                $usertime->getObjectPHID().'/'));
++        }
++        $item->setStatusIcon('fa-clock-o green');
++      }
++
++      $view->addItem($item);
++    }
++    return $view;
++
++  }
++}
+diff --git a/src/applications/people/controller/PhabricatorPeopleProfileViewController.php b/src/applications/people/controller/PhabricatorPeopleProfileViewController.php
+index b929d980d5..31446bad40 100644
+--- a/src/applications/people/controller/PhabricatorPeopleProfileViewController.php
++++ b/src/applications/people/controller/PhabricatorPeopleProfileViewController.php
+@@ -3,10 +3,6 @@
+ final class PhabricatorPeopleProfileViewController
+   extends PhabricatorPeopleProfileController {
+ 
+-  public function shouldAllowPublic() {
+-    return true;
+-  }
+-
+   public function handleRequest(AphrontRequest $request) {
+     $viewer = $this->getViewer();
+     $username = $request->getURIData('username');
+diff --git a/src/applications/people/engine/PhabricatorPeopleProfileMenuEngine.php b/src/applications/people/engine/PhabricatorPeopleProfileMenuEngine.php
+index 6d6d239f5b..e7151190eb 100644
+--- a/src/applications/people/engine/PhabricatorPeopleProfileMenuEngine.php
++++ b/src/applications/people/engine/PhabricatorPeopleProfileMenuEngine.php
+@@ -10,6 +10,7 @@ final class PhabricatorPeopleProfileMenuEngine
+   const ITEM_TASKS = 'people.tasks';
+   const ITEM_COMMITS = 'people.commits';
+   const ITEM_REVISIONS = 'people.revisions';
++  const ITEM_TIME =  'people.time';
+ 
+   protected function isMenuEngineConfigurable() {
+     return false;
+@@ -76,6 +77,9 @@ final class PhabricatorPeopleProfileMenuEngine
+       ->setBuiltinKey(self::ITEM_MANAGE)
+       ->setMenuItemKey(PhabricatorPeopleManageProfileMenuItem::MENUITEMKEY);
+ 
++    $items[] = $this->newItem()
++      ->setBuiltinKey(self::ITEM_TIME)
++      ->setMenuItemKey(PhabricatorPeopleTimeProfileMenuItem::MENUITEMKEY);
+     return $items;
+   }
+ 
+diff --git a/src/applications/people/menuitem/PhabricatorPeopleTimeProfileMenuItem.php b/src/applications/people/menuitem/PhabricatorPeopleTimeProfileMenuItem.php
+new file mode 100644
+index 0000000000..0b65292b79
+--- /dev/null
++++ b/src/applications/people/menuitem/PhabricatorPeopleTimeProfileMenuItem.php
+@@ -0,0 +1,72 @@
++<?php
++final class PhabricatorPeopleTimeProfileMenuItem
++  extends PhabricatorProfileMenuItem {
++
++  const MENUITEMKEY = 'people.time';
++
++  protected function newMenuItemViewList(
++    PhabricatorProfileMenuItemConfiguration $config) {
++
++    $user = $config->getProfileObject();
++    $id = $user->getID();
++
++    $item = $this->newItemView()
++      ->setURI("/people/time/{$id}/")
++      ->setName($this->getDisplayName($config))
++      ->setIcon('clock-o');
++
++    return array(
++      $item,
++    );
++  }
++
++  public function getMenuItemTypeName() {
++    return pht('Time');
++  }
++
++  private function getDefaultName() {
++    return pht('Time');
++  }
++
++  public function canHideMenuItem(
++    PhabricatorProfileMenuItemConfiguration $config) {
++    return true;
++  }
++
++  public function getDisplayName(
++    PhabricatorProfileMenuItemConfiguration $config) {
++    $name = $config->getMenuItemProperty('name');
++
++    if (strlen($name)) {
++      return $name;
++    }
++    return $this->getDefaultName();
++  }
++
++  public function buildEditEngineFields(
++    PhabricatorProfileMenuItemConfiguration $config) {
++    return array(
++      id(new PhabricatorTextEditField())
++        ->setKey('name')
++        ->setLabel(pht('Name'))
++        ->setPlaceholder($this->getDefaultName())
++        ->setValue($config->getMenuItemProperty('name')),
++    );
++  }
++
++  protected function newNavigationMenuItems(
++    PhabricatorProfileMenuItemConfiguration $config) {
++
++    $user = $config->getProfileObject();
++    $id = $user->getID();
++
++    $item = $this->newItemView()
++      ->setURI("/people/time/{$id}/")
++      ->setName($this->getDisplayName($config))
++      ->setIcon('clock-o');
++
++    return array(
++      $item,
++    );
++  }
++}
+diff --git a/src/applications/phrequent/conduit/PhrequentTimespendConduitAPIMethod.php b/src/applications/phrequent/conduit/PhrequentTimespendConduitAPIMethod.php
+new file mode 100644
+index 0000000000..08108fffc4
+--- /dev/null
++++ b/src/applications/phrequent/conduit/PhrequentTimespendConduitAPIMethod.php
+@@ -0,0 +1,61 @@
++<?php
++
++final class PhrequentTimespendConduitAPIMethod
++  extends PhrequentConduitAPIMethod {
++
++  public function getAPIMethodName() {
++    return 'phrequent.worklog';
++  }
++
++  public function getMethodDescription() {
++    $description = pht('Log time spend on a given ticket, ');
++    $description += pht('using a start timestamp and a ');
++    $description += pht('Worklog string (ex. 1d3h20m).');
++    return $description;
++  }
++
++  public function getMethodStatus() {
++    return self::METHOD_STATUS_UNSTABLE;
++  }
++
++  protected function defineParamTypes() {
++    return array(
++      'objectPHID' => 'required phid',
++      'startTime' => 'required int',
++      'worklog' => 'required text',
++      'notes' => 'text',
++    );
++  }
++
++  protected function defineReturnType() {
++    return 'phid';
++  }
++
++  protected function execute(ConduitAPIRequest $request) {
++    $user            = $request->getUser();
++    $object_phid     = $request->getValue('objectPHID');
++    $start_timestamp = $request->getValue('startTime');
++    $worklog         = $request->getValue('worklog');
++    $notes           = $request->getValue('notes');
++
++    if (strlen($worklog) > 0) {
++      $worklog_parser = new WorklogParser(
++        $start_timestamp->getEpoch(),
++        $worklog);
++      $parse_error = $worklog_parser->getError();
++      if (strlen($parse_error) > 0) {
++        return array('ERR_WORKLOG_PARSER' =>  pht('Syntax error'));
++      } else {
++        $editor = new PhrequentTrackingEditor();
++        return $editor->addWorklog(
++          $user,
++          $object_phid,
++          $start_timestamp,
++          $worklog);
++      }
++
++    } else {
++      return array('ERR_WORKLOG_PARSER' =>  pht('Empty worklog'));
++    }
++  }
++}
+diff --git a/src/applications/phrequent/controller/PhrequentTrackController.php b/src/applications/phrequent/controller/PhrequentTrackController.php
+index de0b75324c..1283dd16e9 100644
+--- a/src/applications/phrequent/controller/PhrequentTrackController.php
++++ b/src/applications/phrequent/controller/PhrequentTrackController.php
+@@ -1,174 +1,289 @@
+ <?php
+ 
+-final class PhrequentTrackController
+-  extends PhrequentController {
++ final class PhrequentTrackController extends PhrequentController {
+ 
+   private $verb;
+   private $phid;
+ 
+-  public function willProcessRequest(array $data) {
++  public function willProcessRequest (array $data)
++  {
+     $this->phid = $data['phid'];
+     $this->verb = $data['verb'];
+   }
+ 
+-  public function processRequest() {
+-    $request = $this->getRequest();
+-    $viewer = $request->getUser();
++  public function processRequest ()
++  {
++    $request = $this->getRequest ();
++    $viewer = $request->getUser ();
++
+ 
+     $phid = $this->phid;
+-    $handle = id(new PhabricatorHandleQuery())
+-      ->setViewer($viewer)
+-      ->withPHIDs(array($phid))
+-      ->executeOne();
+-    $done_uri = $handle->getURI();
++    $handle =
++      id (new PhabricatorHandleQuery ())->setViewer ($viewer)->
++      withPHIDs (array ($phid))->executeOne ();
++    $done_uri = $handle->getURI ();
+ 
+     $current_timer = null;
+-    switch ($this->verb) {
++    switch ($this->verb)
++      {
+       case 'start':
+-        $button_text = pht('Start Tracking');
+-        $title_text = pht('Start Tracking Time');
+-        $inner_text = pht('What time did you start working?');
+-        $action_text = pht('Start Timer');
+-        $label_text = pht('Start Time');
++        $button_text = pht ('Start Tracking');
++        $title_text = pht ('Start Tracking Time');
++        $inner_text = pht ('What time did you start working?');
++        $ok_button_text = pht ('Start Timer');
++        $label_text = pht ('Start Time');
++        break;
++
++      case 'worklog':
++        $button_text = pht ('Add Worklog');
++        $title_text = pht ('Add Worklog');
++        $inner_text = pht ('When did you start ');
++        $inner_text .= pht('and how long did you worked on current item?');
++        // $inner_text .= pht('You can log weeks, ').
++        //    pht('days, hours and minutes using');
++        // $inner_text .= pht(' one digit and one letter for each').
++        //      pth((, ex. 1w2d5h30m');
++        $inner_text .= pht('You can log hours and minutes using');
++        $inner_text .= pht(' one digit and one letter for each, ex. 5h30m');
++        $ok_button_text = pht ('Add worklog');
++        $label_text = pht ('Start Time');
++        $worklog_action_text = pht ('Worklog');
+         break;
++
+       case 'stop':
+-        $button_text = pht('Stop Tracking');
+-        $title_text = pht('Stop Tracking Time');
+-        $inner_text = pht('What time did you stop working?');
+-        $action_text = pht('Stop Timer');
+-        $label_text = pht('Stop Time');
+-
+-
+-        $current_timer = id(new PhrequentUserTimeQuery())
+-          ->setViewer($viewer)
+-          ->withUserPHIDs(array($viewer->getPHID()))
+-          ->withObjectPHIDs(array($phid))
+-          ->withEnded(PhrequentUserTimeQuery::ENDED_NO)
+-          ->executeOne();
+-        if (!$current_timer) {
+-          return $this->newDialog()
+-            ->setTitle(pht('Not Tracking Time'))
+-            ->appendParagraph(
+-              pht('You are not currently tracking time on this object.'))
+-            ->addCancelButton($done_uri);
+-        }
++        $button_text = pht ('Stop Tracking');
++        $title_text = pht ('Stop Tracking Time');
++        $inner_text = pht ('What time did you stop working?');
++        $ok_button_text = pht ('Stop timer');
++        $label_text = pht ('Stop Time');
++
++
++        $current_timer =
++          id (new PhrequentUserTimeQuery ())->setViewer ($viewer)->
++          withUserPHIDs (array ($viewer->getPHID ()))->
++          withObjectPHIDs (array ($phid))->
++          withEnded (PhrequentUserTimeQuery::ENDED_NO)->executeOne ();
++        if (!$current_timer)
++          {
++            return $this->newDialog ()->setTitle (pht ('Not Tracking Time'))->
++              appendParagraph (pht
++                               ('You are not currently tracking time on this object.'))->
++              addCancelButton ($done_uri);
++          }
++        break;
++
++      case 'delete':
++
++        $request_data =  $request->getRequestData();
++        $timelog_id =  $request_data['__timelog_id__'];
++        $query = new PhrequentUserTimeQuery();
++        $query->withIDs(array($timelog_id));
++        $query->setViewer($viewer);
++        $usertime = $query->executeOne();
++
++        if ($usertime !== null) {
++            if ($usertime->getObjectPHID() !== null &&
++                   $usertime->getUserPHID() === $viewer->getPHID()) {
++
++                $is_confirmed = array_key_exists('__confirm__', $request_data) && ($request_data['__confirm__'] == 'true');
++                if ($is_confirmed) {
++                    // actual delete
++                    $usertime->delete();
++                    $done_uri = $request_data['__back__'];
++                    return id(new AphrontRedirectResponse ())
++                      ->setURI($done_uri);
++                } else {
++                    $done_uri = $request_data['__back__'];
++                    return $this->newDialog()->setTitle(pht('Timelog deletion'))
++                      ->appendParagraph(
++                        pht('Are you sure to delete this timelog?'))
++                      ->addSubmitButton(pht('Yes, delete'))
++                      ->addCancelButton($done_uri)
++                      ->addHiddenInput('__timelog_id__', $timelog_id)
++                      ->addHiddenInput('__confirm__', 'true')
++                      ->addHiddenInput('__back__', $done_uri);
++                }
++            } else {
++                  return $this->newDialog()
++                    ->setTitle(pht('You are not the owner'))
++                    ->appendParagraph(
++                      pht('You cannot delete timelog created by another user.'))
++                    ->addCancelButton($done_uri);
++            }
++          } else {
++            return $this->newDialog()->setTitle(pht('Worklog not found'))
++                    ->appendParagraph(
++                    pht('I was unable to found the worklog you try to delete.'))
++                    ->addCancelButton($done_uri);
++          }
+         break;
++
++
+       default:
+-        return new Aphront404Response();
+-    }
++        return new Aphront404Response ();
++      }
+ 
+-    $errors = array();
++    $errors = array ();
+     $v_note = null;
+     $e_date = null;
+ 
+-    $timestamp = AphrontFormDateControlValue::newFromEpoch(
+-      $viewer,
+-      time());
+-
+-    if ($request->isDialogFormPost()) {
+-      $v_note = $request->getStr('note');
+-      $timestamp = AphrontFormDateControlValue::newFromRequest(
+-        $request,
+-        'epoch');
+-
+-      if (!$timestamp->isValid()) {
+-        $errors[] = pht('Please choose a valid date.');
+-        $e_date = pht('Invalid');
+-      } else {
+-        $max_time = PhabricatorTime::getNow();
+-        if ($timestamp->getEpoch() > $max_time) {
+-          if ($this->isStoppingTracking()) {
+-            $errors[] = pht(
+-              'You can not stop tracking time at a future time. Enter the '.
+-              'current time, or a time in the past.');
+-          } else {
+-            $errors[] = pht(
+-              'You can not start tracking time at a future time. Enter the '.
+-              'current time, or a time in the past.');
++    $e_worklog = null;
++    $worklog = null;
++
++    $timestamp = AphrontFormDateControlValue::newFromEpoch ($viewer, time ());
++
++    if ($request->isDialogFormPost ())
++      {
++        $v_note = $request->getStr ('note');
++        $worklog = $request->getStr ('worklog');
++        $timestamp = AphrontFormDateControlValue::newFromRequest ($request, 'epoch');
++
++        if (!$timestamp->isValid ())
++          {
++            $errors[] = pht ('Please choose a valid date.');
++            $e_date = pht ('Invalid');
+           }
+-          $e_date = pht('Invalid');
+-        }
++        else
++          {
++            $max_time = PhabricatorTime::getNow ();
++            if ($timestamp->getEpoch () > $max_time)
++              {
++                if ($this->isStoppingTracking ())
++                  {
++                    $errors[] =
++                      pht
++                      ('You can not stop tracking time at a future time. Enter the '.'current time, or a time in the past.');
++                  }
++                else
++                  {
++                    $errors[] =
++                      pht
++                      ('You can not start tracking time at a future time. Enter the '.'current time, or a time in the past.');
++                  }
++                $e_date = pht ('Invalid');
++              }
+ 
+-        if ($this->isStoppingTracking()) {
+-          $min_time = $current_timer->getDateStarted();
+-          if ($min_time > $timestamp->getEpoch()) {
+-            $errors[] = pht('Stop time must be after start time.');
+-            $e_date = pht('Invalid');
++            if ($this->isWorklog ())
++              {
++                if (strlen ($worklog) > 0)
++                  {
++                    $worklog_parser =
++                      new WorklogParser ($timestamp->getEpoch (), $worklog);
++                    $parse_error = $worklog_parser->getError ();
++                    if (strlen ($parse_error) > 0)
++                      {
++                        $errors[] = $parse_error;
++                        $e_worklog = pht ('Syntax error');
++                      }
++                  }
++                else
++                  {
++                    $errors[] = pht ('Please type a worklog');
++                    $e_worklog = pht ('Syntax error');
++                  }
++              }
++            else if ($this->isStoppingTracking ())
++              {
++                $min_time = $current_timer->getDateStarted ();
++                if ($min_time > $timestamp->getEpoch ())
++                  {
++                    $errors[] = pht ('Stop time must be after start time.');
++                    $e_date = pht ('Invalid');
++                  }
++              }
+           }
+-        }
+-      }
+ 
+-      if (!$errors) {
+-        $editor = new PhrequentTrackingEditor();
+-        if ($this->isStartingTracking()) {
+-          $editor->startTracking(
+-            $viewer,
+-            $this->phid,
+-            $timestamp->getEpoch());
+-        } else if ($this->isStoppingTracking()) {
+-          $editor->stopTracking(
+-            $viewer,
+-            $this->phid,
+-            $timestamp->getEpoch(),
+-            $v_note);
+-        }
++        if (!$errors)
++          {
++            $editor = new PhrequentTrackingEditor ();
++            if ($this->isStartingTracking ())
++              {
++                $editor->startTracking ($viewer,
++                                        $this->phid, $timestamp->getEpoch ());
++              }
++            else if ($this->isStoppingTracking ())
++              {
++                $editor->stopTracking ($viewer,
++                                       $this->phid,
++                                       $timestamp->getEpoch (), $v_note);
++              }
++            else if ($this->isWorklog ())
++              {
++                $editor->addWorklog ($viewer,
++                                     $this->phid,
++                                     $timestamp->getEpoch (), $worklog, $v_note);
++              }
++
++            return id (new AphrontRedirectResponse ())->setURI ($done_uri);
++          }
+ 
+-        return id(new AphrontRedirectResponse())->setURI($done_uri);
+       }
+ 
+-    }
++    $dialog =
++      $this->newDialog ()->setTitle ($title_text)->
++      setWidth (AphrontDialogView::WIDTH_FORM)->setErrors ($errors)->
++      appendParagraph ($inner_text);
++
++    $form = new PHUIFormLayoutView ();
+ 
+-    $dialog = $this->newDialog()
+-      ->setTitle($title_text)
+-      ->setWidth(AphrontDialogView::WIDTH_FORM)
+-      ->setErrors($errors)
+-      ->appendParagraph($inner_text);
++    if ($this->isStoppingTracking ())
++      {
++        $start_time = $current_timer->getDateStarted ();
++        $start_string = pht ('%s (%s ago)',
++                             phabricator_datetime ($start_time, $viewer),
++                             phutil_format_relative_time
++                             (PhabricatorTime::getNow () - $start_time));
+ 
+-    $form = new PHUIFormLayoutView();
++        $form->appendChild (id (new AphrontFormStaticControl ())->setLabel
++                            (pht ('Started At'))->setValue ($start_string));
++      }
+ 
+-    if ($this->isStoppingTracking()) {
+-      $start_time = $current_timer->getDateStarted();
+-      $start_string = pht(
+-        '%s (%s ago)',
+-        phabricator_datetime($start_time, $viewer),
+-        phutil_format_relative_time(PhabricatorTime::getNow() - $start_time));
++    $form->appendChild (id (new AphrontFormDateControl ())->
++                        setUser ($viewer)->setName ('epoch')->
++                        setLabel ($label_text)->setError ($e_date)->
++                        setValue ($timestamp));
+ 
+-      $form->appendChild(
+-        id(new AphrontFormStaticControl())
+-          ->setLabel(pht('Started At'))
+-          ->setValue($start_string));
+-    }
++    if ($this->isWorklog ())
++      {
++        if($worklog == ""){
++          $worklog = '7h';
++        }
++        $form->appendChild (id (new AphrontFormTextControl ())->
++                            setUser ($viewer)->setName ('worklog')->
++                            setLabel ($worklog_action_text)->
++                            setError ($e_worklog)->setValue ($worklog));
+ 
+-    $form->appendChild(
+-      id(new AphrontFormDateControl())
+-        ->setUser($viewer)
+-        ->setName('epoch')
+-        ->setLabel($action_text)
+-        ->setError($e_date)
+-        ->setValue($timestamp));
++        $form->appendChild (id (new AphrontFormTextControl ())->setLabel
++                            (pht ('Note'))->setName ('note')->setValue ($v_note));
++      }
+ 
+-    if ($this->isStoppingTracking()) {
+-      $form->appendChild(
+-        id(new AphrontFormTextControl())
+-          ->setLabel(pht('Note'))
+-          ->setName('note')
+-          ->setValue($v_note));
+-    }
++    if ($this->isStoppingTracking ())
++      {
++        $form->appendChild (id (new AphrontFormTextControl ())->setLabel
++                            (pht ('Note'))->setName ('note')->setValue ($v_note));
++      }
+ 
+-    $dialog->appendChild($form);
++    $dialog->appendChild ($form);
+ 
+-    $dialog->addCancelButton($done_uri);
++    $dialog->addCancelButton ($done_uri);
+ 
+-    $dialog->addSubmitButton($action_text);
++    $dialog->addSubmitButton ($ok_button_text);
+ 
+     return $dialog;
+   }
+ 
+-  private function isStartingTracking() {
+-    return $this->verb === 'start';
++  private function isStartingTracking ()
++  {
++    return $this->verb == 'start';
++  }
++
++  private function isStoppingTracking ()
++  {
++    return $this->verb == 'stop';
+   }
+ 
+-  private function isStoppingTracking() {
+-    return $this->verb === 'stop';
++  private function isWorklog ()
++  {
++    return $this->verb == 'worklog';
+   }
+ }
+diff --git a/src/applications/phrequent/editor/PhrequentTrackingEditor.php b/src/applications/phrequent/editor/PhrequentTrackingEditor.php
+index fec91ef7cb..2ac6f1bc2f 100644
+--- a/src/applications/phrequent/editor/PhrequentTrackingEditor.php
++++ b/src/applications/phrequent/editor/PhrequentTrackingEditor.php
+@@ -12,6 +12,30 @@ final class PhrequentTrackingEditor extends PhabricatorEditor {
+     return $phid;
+   }
+ 
++  public function addWorklog(
++    PhabricatorUser $user,
++    $phid,
++    $begin_timestamp,
++    $worklog,
++    $note) {
++
++    $usertime_dao = new PhrequentUserTime();
++    $conn = $usertime_dao->establishConnection('r');
++
++    $worklog_parser = new WorklogParser($begin_timestamp, $worklog);
++    $end_timestamp = $worklog_parser->getTimeStamp();
++
++    $usertime = new PhrequentUserTime();
++    $usertime->setDateStarted($begin_timestamp);
++    $usertime->setDateEnded($end_timestamp);
++    $usertime->setUserPHID($user->getPHID());
++    $usertime->setObjectPHID($phid);
++    $usertime->save();
++
++    return $phid;
++  }
++
++
+   public function stopTracking(
+     PhabricatorUser $user,
+     $phid,
+diff --git a/src/applications/phrequent/event/PhrequentUIEventListener.php b/src/applications/phrequent/event/PhrequentUIEventListener.php
+index e876559efe..f02dda89cb 100644
+--- a/src/applications/phrequent/event/PhrequentUIEventListener.php
++++ b/src/applications/phrequent/event/PhrequentUIEventListener.php
+@@ -42,19 +42,30 @@ final class PhrequentUIEventListener
+         ->setIcon('fa-clock-o')
+         ->setWorkflow(true)
+         ->setHref('/phrequent/track/start/'.$object->getPHID().'/');
++      $this->addActionMenuItems($event, $track_action);
++
++      $track_action = id(new PhabricatorActionView())
++        ->setName(pht('Add Worklog'))
++        ->setIcon('fa-clock-o green')
++        ->setWorkflow(true)
++        ->setHref('/phrequent/track/worklog/'.$object->getPHID().'/');
++      $this->addActionMenuItems($event, $track_action);
++
++
+     } else {
+       $track_action = id(new PhabricatorActionView())
+         ->setName(pht('Stop Tracking Time'))
+         ->setIcon('fa-clock-o red')
+         ->setWorkflow(true)
+         ->setHref('/phrequent/track/stop/'.$object->getPHID().'/');
++      $this->addActionMenuItems($event, $track_action);
+     }
+ 
+     if (!$user->isLoggedIn()) {
+       $track_action->setDisabled(true);
+     }
+ 
+-    $this->addActionMenuItems($event, $track_action);
+-  }
++
++ }
+ 
+ }
+diff --git a/src/applications/phrequent/query/PhrequentSearchEngine.php b/src/applications/phrequent/query/PhrequentSearchEngine.php
+index d137c40b64..4fbd3f891f 100644
+--- a/src/applications/phrequent/query/PhrequentSearchEngine.php
++++ b/src/applications/phrequent/query/PhrequentSearchEngine.php
+@@ -161,10 +161,40 @@ final class PhrequentSearchEngine extends PhabricatorApplicationSearchEngine {
+           pht(
+             'Tracked %s',
+             $time_spent));
++        $item->addAttribute(
++          pht(
++            'Started on %s',
++            phabricator_datetime($usertime->getDateStarted(), $viewer)));
++
+         $item->addAttribute(
+           pht(
+             'Ended on %s',
+             phabricator_datetime($usertime->getDateEnded(), $viewer)));
++
++        if ($usertime->getObjectPHID() !== null &&
++          $usertime->getUserPHID() === $viewer->getPHID()) {
++          $back_uri = '/';
++          if ($this->getRequest() !== null) {
++            $back_uri = $this->getRequest()->GetPath();
++          }
++          $uri = new PhutilURI('/phrequent/track/delete/'.
++              $usertime->getObjectPHID().'/');
++          $parameters = array();
++          $parameters['__back__'] = $back_uri;
++          $parameters['__timelog_id__'] = $usertime->getID();
++          $uri->setQueryParams($parameters);
++          $href = $uri->__toString();
++
++          $item->addAction(
++              id(new PHUIListItemView())
++                ->setIcon('fa-trash')
++                ->addSigil('phrequent-delete-worklog')
++                ->setWorkflow(true)
++                ->setRenderNameAsTooltip(true)
++                ->setName(pht('Delete'))
++                ->setHref($href));
++        }
++
+       } else {
+         $item->addAttribute(
+           pht(
+diff --git a/src/applications/phrequent/storage/WorklogParser.php b/src/applications/phrequent/storage/WorklogParser.php
+new file mode 100644
+index 0000000000..9c3d01b2b1
+--- /dev/null
++++ b/src/applications/phrequent/storage/WorklogParser.php
+@@ -0,0 +1,71 @@
++<?php
++
++/* !
++*
++* Add time to a timestamp using a formatted string
++*
++* Formatted string uses tokens composed by a number and a character:
++* - Nw : add N week(s) of work. One week is five days
++* - Nd : add N day(s) of work. One day is 7 hours
++* - Nh : add N hours of work
++* - Nm : add N minutes of work
++*
++* Tokens can be chained, ex. 1h30m, 1w3d2h20m
++*
++*/
++final class WorklogParser {
++
++  /* capture blocks of digits + 1 letter */
++  protected static $regexWorklog = '/(\s?\d{1,}\w\s?)/';
++
++  /* separate digit and letter */
++  protected static $regexWorklogItem = '/(\d{1,})(\w)/';
++
++  protected static $durationMap = [
++    /*
++    'w' => 126000,// 60 * 60 * 7 * 5
++    'd' => 25200, // 60 * 60 * 7
++    */
++    'h' => 3600,  // 60 * 60
++    'm' => 60,
++  ];
++
++  private $timestamp;
++  private $error;
++
++  public function __construct($timestamp, $worklog) {
++    $this->timestamp = $timestamp;
++    $matches = [];
++    preg_match_all(static::$regexWorklog, $worklog, $matches);
++
++    // shift of the first match, which is the full string
++    $this->timestamp += $this->worklogToSeconds(array_shift($matches));
++  }
++
++  public function getError() {
++    return $this->error;
++  }
++
++  public function getTimeStamp() {
++    return $this->timestamp;
++  }
++
++  private function worklogToSeconds($tokens) {
++    $duration_in_second = 0;
++
++    foreach ($tokens as $token) {
++      $matches = ['', 0, 'm']; // default to 0 minutes 
++      preg_match(static::$regexWorklogItem, $token, $matches);
++      if (!$matches[1] || !$matches[2]) {
++
++        $this->error = pht('Trailing characters in the worklog');
++        $this->error .= pht(' (digit without letter?)');
++      } else {
++        $type  = $matches[2];
++        $count = $matches[1];
++        $duration_in_second += $count * static::$durationMap[$type];
++      }
++    }
++    return $duration_in_second;
++  }
++}
+diff --git a/src/applications/phrequent/storage/__tests__/WorklogParserTestCase.php b/src/applications/phrequent/storage/__tests__/WorklogParserTestCase.php
+new file mode 100644
+index 0000000000..44f07f6036
+--- /dev/null
++++ b/src/applications/phrequent/storage/__tests__/WorklogParserTestCase.php
+@@ -0,0 +1,9 @@
++<?php
++
++final class WorklogParserTestCase extends PhabricatorTestCase {
++
++  public function testPreemptingEvents() {
++
++    $this->assertEqual("A", "A");
++  }
++}
