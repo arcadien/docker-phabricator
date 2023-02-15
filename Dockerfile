@@ -3,7 +3,6 @@ FROM ubuntu:latest
 EXPOSE 80 443 2222 24
 COPY baseline /baseline
 RUN /baseline/repository.sh
-COPY /baseline/time-logging-feature.patch /time-logging-feature.patch
 RUN /baseline/setup.sh
 COPY preflight /preflight
 RUN /preflight/setup.sh

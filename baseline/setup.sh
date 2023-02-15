@@ -28,11 +28,7 @@ git clone https://github.com/arcadien/phabricator-extensions-Sprint.git /srv/pha
 
 # Hack to add direct time logging to Phrequent application
 cd /srv/phabricator/phabricator
-patch -p1 < /time-logging-feature.patch
-rm /time-logging-feature.patch
-cd /srv/phabricator/phabricator
 ../arcanist/bin/arc liberate -- src/
-/etc/init.d/php8.1-fpm restart
 
 # Install requirements
 DEBIAN_FRONTEND=noninteractive apt update
