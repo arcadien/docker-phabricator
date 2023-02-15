@@ -32,7 +32,7 @@ patch -p1 < /time-logging-feature.patch
 rm /time-logging-feature.patch
 cd /srv/phabricator/phabricator
 ../arcanist/bin/arc liberate -- src/
-/etc/init.d/php7.4-fpm restart
+/etc/init.d/php8.1-fpm restart
 
 # Install requirements
 DEBIAN_FRONTEND=noninteractive apt update

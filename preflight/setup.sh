@@ -26,8 +26,8 @@ mv letsencrypt.sh /app/letsencrypt.sh
 mv 10-boot-conf /app/startup/10-boot-conf
 mv 15-https-conf /app/startup/15-https-conf
 
-mv php-fpm.conf /etc/php/7.4/fpm/php-fpm.conf.template
-mv php.ini      /etc/php/7.4/fpm/php.ini
+mv php-fpm.conf /etc/php/8.1/fpm/php-fpm.conf.template
+mv php.ini      /etc/php/8.1/fpm/php.ini
 
 mv supervisord.conf /app/supervisord.conf
 mv init.sh /app/init.sh
@@ -45,8 +45,8 @@ ls /preflight
 rmdir /preflight # This should now be empty; it's an error if it's not.
 
 # Install PHPExcel
-echo '' >> /etc/php/7.4/fpm/php-fpm.conf
-echo 'php_value[include_path] = "/srv/phabricator/PHPExcel/Classes"' >> /etc/php/7.4/fpm/php-fpm.conf
+echo '' >> /etc/php/8.1/fpm/php-fpm.conf
+echo 'php_value[include_path] = "/srv/phabricator/PHPExcel/Classes"' >> /etc/php/8.1/fpm/php-fpm.conf
 
 # Move the default SSH to port 24
 mkdir -p /etc/ssh/sshd_config.d/

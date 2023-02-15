@@ -198,7 +198,7 @@ sed -i "s/PHABRICATOR_DAEMON_USER/$PHABRICATOR_DAEMON_USER/g" /etc/group
 sed -i "s/PHABRICATOR_VCS_USER/$PHABRICATOR_VCS_USER/g" /etc/group
 sed "s/__PHABRICATOR_VCS_USER__/$PHABRICATOR_VCS_USER/g" /etc/phabricator-ssh/sshd_config.phabricator.template > /etc/phabricator-ssh/sshd_config.phabricator
 sed "s/__PHABRICATOR_VCS_USER__/$PHABRICATOR_VCS_USER/g" /etc/phabricator-ssh/phabricator-ssh-hook.sh.template > /etc/phabricator-ssh/phabricator-ssh-hook.sh
-sed "s/__PHABRICATOR_WWW_USER__/nginx/g" /etc/php/7.4/fpm/php-fpm.conf.template > /etc/php/7.4/fpm/php-fpm.conf
+sed "s/__PHABRICATOR_WWW_USER__/nginx/g" /etc/php/8.1/fpm/php-fpm.conf.template > /etc/php/8.1/fpm/php-fpm.conf
 
 # Update supervisord so that it use rights users for services
 sed -i "s/__PHABRICATOR_WWW_USER__/nginx/g"    		       /app/supervisord.conf
@@ -364,7 +364,7 @@ unset APHLICT_PORT
 popd
 
 if [ "$ENABLE_APCU" != "" ]; then
-	  cat >/etc/php/7.4/conf.d/apcu.ini <<EOF
+	  cat >/etc/php/8.1/conf.d/apcu.ini <<EOF
 extension=apcu.so
 EOF
 fi
