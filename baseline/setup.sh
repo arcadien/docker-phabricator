@@ -12,12 +12,34 @@ echo "wwwgrp-phabricator:!:2000:nginx,PHABRICATOR_VCS_USER,PHABRICATOR_DAEMON_US
 
 # Install requirements
 DEBIAN_FRONTEND=noninteractive apt update
-DEBIAN_FRONTEND=noninteractive apt install -y nginx \
+DEBIAN_FRONTEND=noninteractive apt install -y git \
     php-fpm php-mbstring php-mysql php-curl  php-gd php-ldap \
     php-fileinfo php-posix php-json php-iconv php-ctype php-zip php-sockets \
+    php-xmlwriter php-opcache imagemagick php-imagick php-apcu
+
+# Set up the Phabricator code base
+cd /
+mkdir /srv/phabricator
+cd /srv/phabricator
+git clone https://we.phorge.it/source/phorge.git                        /srv/phabricator/phabricator
+git clone https://we.phorge.it/source/arcanist.git                      /srv/phabricator/arcanist
+git clone https://www.github.com/PHPOffice/PHPExcel.git                 /srv/phabricator/PHPExcel
+git clone https://github.com/arcadien/phabricator-extensions-Sprint.git /srv/phabricator/Sprint-extension
+
+# Hack to add direct time logging to Phrequent application
+cd /srv/phabricator/phabricator
+patch -p1 < /time-logging-feature.patch
+rm /time-logging-feature.patch
+cd /srv/phabricator/phabricator
+../arcanist/bin/arc liberate -- src/
+/etc/init.d/php7.4-fpm restart
+
+# Install requirements
+DEBIAN_FRONTEND=noninteractive apt update
+DEBIAN_FRONTEND=noninteractive apt install -y nginx \
     python3-pygments nodejs ca-certificates \
-    sudo subversion mercurial php-xmlwriter php-opcache imagemagick php-imagick \
-    postfix locales git python3-pip npm hostname php-apcu certbot supervisor mariadb-client cron openssh-server
+    sudo subversion mercurial  \
+    postfix locales python3-pip npm hostname certbot supervisor mariadb-client cron openssh-server
 
 # Do not start services automatically
 update-rc.d cron remove
@@ -31,11 +53,4 @@ npm install -g ws
 rm -rf /tmp/*
 DEBIAN_FRONTEND=noninteractive apt-get clean
 
-# Set up the Phabricator code base
-cd /
-mkdir /srv/phabricator
-cd /srv/phabricator
-git clone https://www.github.com/arcadien/phabricator.git               /srv/phabricator/phabricator
-git clone https://www.github.com/arcadien/arcanist.git                  /srv/phabricator/arcanist
-git clone https://www.github.com/PHPOffice/PHPExcel.git                 /srv/phabricator/PHPExcel
-git clone https://github.com/arcadien/phabricator-extensions-Sprint.git /srv/phabricator/Sprint-extension
+
