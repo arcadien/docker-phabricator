@@ -41,8 +41,7 @@ mkdir /opt/iomonitor
 mv iomonitor /opt/iomonitor
 rm setup.sh
 cd /
-ls /preflight
-rmdir /preflight # This should now be empty; it's an error if it's not.
+rm -rf /preflight # This should now be empty; it's an error if it's not.
 
 # Install PHPExcel
 echo '' >> /etc/php/8.1/fpm/php-fpm.conf

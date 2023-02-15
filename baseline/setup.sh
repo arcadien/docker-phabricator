@@ -12,8 +12,8 @@ echo "wwwgrp-phabricator:!:2000:nginx,PHABRICATOR_VCS_USER,PHABRICATOR_DAEMON_US
 
 # Install requirements
 DEBIAN_FRONTEND=noninteractive apt update
-DEBIAN_FRONTEND=noninteractive apt install -y git \
-    php-fpm php-mbstring php-mysql php-curl  php-gd php-ldap \
+DEBIAN_FRONTEND=noninteractive apt install -y git make                      \
+    php-fpm php-mbstring php-mysql php-curl  php-gd php-ldap                \
     php-fileinfo php-posix php-json php-iconv php-ctype php-zip php-sockets \
     php-xmlwriter php-opcache imagemagick php-imagick php-apcu
 
@@ -21,8 +21,8 @@ DEBIAN_FRONTEND=noninteractive apt install -y git \
 cd /
 mkdir /srv/phabricator
 cd /srv/phabricator
-git clone https://we.phorge.it/source/phorge.git                        /srv/phabricator/phabricator
-git clone https://we.phorge.it/source/arcanist.git                      /srv/phabricator/arcanist
+git clone https://github.com/arcadien/phabricator.git                   /srv/phabricator/phabricator
+git clone https://github.com/arcadien/arcanist.git                      /srv/phabricator/arcanist
 git clone https://www.github.com/PHPOffice/PHPExcel.git                 /srv/phabricator/PHPExcel
 git clone https://github.com/arcadien/phabricator-extensions-Sprint.git /srv/phabricator/Sprint-extension
 
